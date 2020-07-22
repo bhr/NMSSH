@@ -82,7 +82,7 @@
             self.session.channel.requestPty = YES;
 
             NSError *error;
-            [self.session.channel startShell:&error];
+			[self.session.channel startShell:&error withCallbackQueue:self.sshQueue];
 
             if (error) {
                 dispatch_async(dispatch_get_main_queue(), ^{

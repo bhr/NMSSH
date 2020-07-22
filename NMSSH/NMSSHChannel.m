@@ -14,6 +14,7 @@
 #else
 @property (nonatomic, assign) dispatch_source_t source;
 #endif
+@property (nonatomic, copy) dispatch_queue_t shellMessageQueue;
 @end
 
 @implementation NMSSHChannel
@@ -34,9 +35,17 @@
         if (![self.session isKindOfClass:[NMSSHSession class]]) {
             @throw @"You have to provide a valid NMSSHSession!";
         }
+		
+		dispatch_queue_attr_t attributes = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0);
+		_shellMessageQueue = dispatch_queue_create("NMSSH.ShellCallbackQueue", attributes);
     }
 
     return self;
+}
+
+- (void)dealloc
+{
+	[self closeShell];
 }
 
 - (BOOL)openChannel:(NSError *__autoreleasing *)error {
@@ -308,7 +317,7 @@
 #pragma mark - REMOTE SHELL SESSION
 // -----------------------------------------------------------------------------
 
-- (BOOL)startShell:(NSError *__autoreleasing *)error  {
+- (BOOL)startShell:(NSError *__autoreleasing *)error withCallbackQueue:(dispatch_queue_t)callbackQueue {
     NMSSHLogInfo(@"Starting shell");
 
     if (![self openChannel:error]) {
@@ -327,62 +336,66 @@
 
     [self setLastResponse:nil];
     [self setSource:dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, CFSocketGetNative([self.session socket]),
-                                           0, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0))];
+										   0, self.shellMessageQueue)];
     dispatch_source_set_event_handler(self.source, ^{
-        NMSSHLogVerbose(@"Data available on the socket!");
-        ssize_t rc, erc=0;
-        char buffer[self.bufferSize];
-
-        while (self.channel != NULL) {
-
-            rc = libssh2_channel_read(self.channel, buffer, (ssize_t)sizeof(buffer));
-            erc = libssh2_channel_read_stderr(self.channel, buffer, (ssize_t)sizeof(buffer));
-
-            if (!(rc >=0 || erc >= 0)) {
+		NMSSHLogVerbose(@"Data available on the socket!");
+		
+		dispatch_sync(callbackQueue, ^{
+			
+			while (self.channel != NULL) {
 				
-				if (rc == LIBSSH2_ERROR_EAGAIN && erc == LIBSSH2_ERROR_EAGAIN) {
+				ssize_t rc, erc=0;
+				char buffer[self.bufferSize];
+				
+				erc = libssh2_channel_read_stderr(self.channel, buffer, (ssize_t)sizeof(buffer));
+				rc = libssh2_channel_read(self.channel, buffer, (ssize_t)sizeof(buffer));
+				
+				if (!(rc >=0 || erc >= 0)) {
+					
+					if (rc == LIBSSH2_ERROR_EAGAIN && erc == LIBSSH2_ERROR_EAGAIN) {
+						return;
+					}
+					
+					NMSSHLogVerbose(@"Return code of response %ld, error %ld", (long)rc, (long)erc);
+					
+					if (rc == LIBSSH2_ERROR_SOCKET_RECV || erc == LIBSSH2_ERROR_SOCKET_RECV) {
+						NMSSHLogVerbose(@"Error received, closing channel...");
+						[self closeShell];
+					}
 					return;
 				}
-				
-                NMSSHLogVerbose(@"Return code of response %ld, error %ld", (long)rc, (long)erc);
-
-                if (rc == LIBSSH2_ERROR_SOCKET_RECV || erc == LIBSSH2_ERROR_SOCKET_RECV) {
-                    NMSSHLogVerbose(@"Error received, closing channel...");
-                    [self closeShell];
-                }
-                return;
-            }
-            else if (rc > 0) {
-                NSData *data = [[NSData alloc] initWithBytes:buffer length:rc];
-                NSString *response = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-                [self setLastResponse:[response copy]];
-
-                if (response && self.delegate && [self.delegate respondsToSelector:@selector(channel:didReadData:)]) {
-                    [self.delegate channel:self didReadData:self.lastResponse];
-                }
-
-                if (self.delegate && [self.delegate respondsToSelector:@selector(channel:didReadRawData:)]) {
-                    [self.delegate channel:self didReadRawData:data];
-                }
-            }
-            else if (erc > 0) {
-                NSData *data = [[NSData alloc] initWithBytes:buffer length:erc];
-                NSString *response = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-
-                if (response && self.delegate && [self.delegate respondsToSelector:@selector(channel:didReadError:)]) {
-                    [self.delegate channel:self didReadError:response];
-                }
-
-                if (self.delegate && [self.delegate respondsToSelector:@selector(channel:didReadRawError:)]) {
-                    [self.delegate channel:self didReadRawError:data];
-                }
-            }
-            else if (libssh2_channel_eof(self.channel) == 1) {
-                NMSSHLogVerbose(@"Host EOF received, closing channel...");
-                [self closeShell];
-                return;
-            }
-        }
+				else if (rc > 0) {
+					NSData *data = [[NSData alloc] initWithBytes:buffer length:rc];
+					NSString *response = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+					[self setLastResponse:[response copy]];
+					
+					if (response && self.delegate && [self.delegate respondsToSelector:@selector(channel:didReadData:)]) {
+						[self.delegate channel:self didReadData:self.lastResponse];
+					}
+					
+					if (self.delegate && [self.delegate respondsToSelector:@selector(channel:didReadRawData:)]) {
+						[self.delegate channel:self didReadRawData:data];
+					}
+				}
+				else if (erc > 0) {
+					NSData *data = [[NSData alloc] initWithBytes:buffer length:erc];
+					NSString *response = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+					
+					if (response && self.delegate && [self.delegate respondsToSelector:@selector(channel:didReadError:)]) {
+						[self.delegate channel:self didReadError:response];
+					}
+					
+					if (self.delegate && [self.delegate respondsToSelector:@selector(channel:didReadRawError:)]) {
+						[self.delegate channel:self didReadRawError:data];
+					}
+				}
+				else if (libssh2_channel_eof(self.channel) == 1) {
+					NMSSHLogVerbose(@"Host EOF received, closing channel...");
+					[self closeShell];
+					return;
+				}
+			}
+		});
     });
 
     dispatch_source_set_cancel_handler(self.source, ^{
