@@ -127,7 +127,7 @@ typedef NS_ENUM(NSInteger, NMSSHChannelType)  {
  @param error Error handler
  @returns Shell initialization success
  */
-- (BOOL)startShell:(NSError *__autoreleasing *)error withCallbackQueue:(dispatch_queue_t __nonnull)callbackQueue;
+- (BOOL)startShell:(NSError * _Nullable * _Nullable)error withCallbackQueue:(dispatch_queue_t _Nonnull)callbackQueue;;
 
 /**
  Close a remote shell on an active channel.
