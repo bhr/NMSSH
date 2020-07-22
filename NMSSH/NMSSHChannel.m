@@ -55,13 +55,15 @@
 
     // Open up the channel
     LIBSSH2_CHANNEL *channel = libssh2_channel_open_session(self.session.rawSession);
-
-    if (channel == NULL){
+    if (channel == NULL) {
+		
         NMSSHLogError(@"Unable to open a session");
         if (error) {
+			NSMutableDictionary *userInfo = [@{ NSLocalizedDescriptionKey : @"Channel allocation error" } mutableCopy];
+			userInfo[NSUnderlyingErrorKey] = self.session.lastError;
             *error = [NSError errorWithDomain:@"NMSSH"
                                          code:NMSSHChannelAllocationError
-                                     userInfo:@{ NSLocalizedDescriptionKey : @"Channel allocation error" }];
+                                     userInfo:userInfo];
         }
 
         return NO;
@@ -337,6 +339,11 @@
             erc = libssh2_channel_read_stderr(self.channel, buffer, (ssize_t)sizeof(buffer));
 
             if (!(rc >=0 || erc >= 0)) {
+				
+				if (rc == LIBSSH2_ERROR_EAGAIN && erc == LIBSSH2_ERROR_EAGAIN) {
+					return;
+				}
+				
                 NMSSHLogVerbose(@"Return code of response %ld, error %ld", (long)rc, (long)erc);
 
                 if (rc == LIBSSH2_ERROR_SOCKET_RECV || erc == LIBSSH2_ERROR_SOCKET_RECV) {
