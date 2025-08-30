@@ -49,7 +49,7 @@
         [self setPort:@(port)];
         [self setUsername:username];
         [self setConnected:NO];
-        [self setFingerprintHash:NMSSHSessionHashMD5];
+        [self setFingerprintHash:NMSSHSessionHashSHA1];
     }
 
     return self;
